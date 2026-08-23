@@ -1,42 +1,39 @@
-$scriptpath = $MyInvocation.MyCommand.Path
-$dir = Split-Path $scriptpath
+$ErrorActionPreference = "Stop"
+
+$dir = $PSScriptRoot
 $vmwvPath = Join-Path $dir "required\VMWV.exe"
-Set-Location $dir
 
-# Wait for VMWV to be responsive
-# we will know vmwv loaded correctly when it has a cmd.exe child process
-
-# begin the loader
-$vmwvLoaded = $false
-while ($vmwvLoaded -eq $false) {
-    # kill any existing VMWV processes
-    try {
-        taskkill /im "VMWV.exe" /t /f
-        Get-Process -Name "VMWV" -ErrorAction SilentlyContinue | Stop-Process -Force
-    } catch {}
-
-    # start a fresh process and give it time to breathe
-    Start-Process -FilePath $vmwvPath -WindowStyle Hidden
-    $vmwv = Get-Process -Name "VMWV" -ErrorAction SilentlyContinue
-    Start-Sleep -s 2
-
-    # begin polling for child processes to ensure VMWV has access to cmd.exe
-    $polling_for_children = $true;
-    $polling_count = 0;
-    while ($polling_for_children -eq $true) {
-        $childProcesses = Get-WmiObject Win32_Process -Filter "ParentProcessId=$($vmwv.Id)"
-        if ($childProcesses | Where-Object {$_.Name -eq "cmd.exe"}) {
-            # we have a child process, VMWV is ready
-            $polling_for_children = $false
-            $vmwvLoaded = $true
-            break
-        }
-
-        # if cmd.exe is not found, wait a second and try again
-        $polling_count++
-        if ($polling_count -gt 10) {
-            $polling_for_children = $false
-        }
-        Start-Sleep -s 1
-    }
+if (-not (Test-Path -LiteralPath $vmwvPath)) {
+    throw "Unable to find VMWV executable at '$vmwvPath'."
 }
+
+$vmwvPath = (Resolve-Path -LiteralPath $vmwvPath).Path
+$vmwv = Get-Process -Name "VMWV" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq $vmwvPath } |
+    Select-Object -First 1
+
+if ($vmwv) {
+    exit 0
+}
+
+$vmwv = Start-Process -FilePath $vmwvPath -WorkingDirectory $dir -WindowStyle Hidden -PassThru
+$startupDeadline = (Get-Date).AddSeconds(30)
+
+do {
+    $vmwv.Refresh()
+    if ($vmwv.HasExited) {
+        throw "VMWV exited during startup with code $($vmwv.ExitCode)."
+    }
+
+    $trayProcess = Get-CimInstance Win32_Process -Filter "ParentProcessId = $($vmwv.Id)" |
+        Where-Object { $_.Name -eq "tray_windows_release.exe" } |
+        Select-Object -First 1
+
+    if ($trayProcess) {
+        exit 0
+    }
+
+    Start-Sleep -Milliseconds 250
+} while ((Get-Date) -lt $startupDeadline)
+
+throw "VMWV did not start its tray process within 30 seconds."
