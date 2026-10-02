@@ -2,7 +2,7 @@
 const STRING_METADATA = {
     name: 'voicemeeter-windows-volume',
     friendlyname: 'Voicemeeter Windows Volume',
-    version: '1.8.0.2',
+    version: '1.8.1.0',
 };
 //{{INJECT_END:PKG}}
 
