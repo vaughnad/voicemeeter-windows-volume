@@ -43,10 +43,10 @@ const getDevices = () => {
 };
 
 const setVolume = (volume) => {
-  // PS C:\> [Audio]::Volume = 0.75  # Set volume to 75%
+  // read by [Audio]::Listen(), 0.75 sets volume to 75%
   sendToPowershellWorker({
     label: label,
-    command: `[Audio]::Volume = ${volume * 0.01}`,
+    command: `${volume * 0.01}`,
   });
 };
 
@@ -93,25 +93,48 @@ interface IMMDeviceEnumerator {\r\n
 [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject { };\r\n
 \r\n
 public class Audio {\r\n
-    static IAudioEndpointVolume Vol() {\r\n
+    delegate T Use<T>(IAudioEndpointVolume epv);\r\n
+    // COM objects are released after every call; the scanner polls this many times a second\r\n
+    static T WithVol<T>(Use<T> use) {\r\n
     var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;\r\n
     IMMDevice dev = null;\r\n
-    Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(/*eRender*/ 0, /*eMultimedia*/ 1, out dev));\r\n
     IAudioEndpointVolume epv = null;\r\n
-    var epvid = typeof(IAudioEndpointVolume).GUID;\r\n
-    Marshal.ThrowExceptionForHR(dev.Activate(ref epvid, /*CLSCTX_ALL*/ 23, 0, out epv));\r\n
-    return epv;\r\n
+    try {\r\n
+        Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(/*eRender*/ 0, /*eMultimedia*/ 1, out dev));\r\n
+        var epvid = typeof(IAudioEndpointVolume).GUID;\r\n
+        Marshal.ThrowExceptionForHR(dev.Activate(ref epvid, /*CLSCTX_ALL*/ 23, 0, out epv));\r\n
+        return use(epv);\r\n
+    } finally {\r\n
+        if (epv != null) Marshal.ReleaseComObject(epv);\r\n
+        if (dev != null) Marshal.ReleaseComObject(dev);\r\n
+        Marshal.ReleaseComObject(enumerator);\r\n
+    }\r\n
     }\r\n
     public static float Volume {\r\n
-    get {float v = -1; Marshal.ThrowExceptionForHR(Vol().GetMasterVolumeLevelScalar(out v)); return v;}\r\n
-    set {Marshal.ThrowExceptionForHR(Vol().SetMasterVolumeLevelScalar(value, System.Guid.Empty));}\r\n
+    get { return WithVol(epv => { float v = -1; Marshal.ThrowExceptionForHR(epv.GetMasterVolumeLevelScalar(out v)); return v; }); }\r\n
+    set { WithVol(epv => { Marshal.ThrowExceptionForHR(epv.SetMasterVolumeLevelScalar(value, System.Guid.Empty)); return 0; }); }\r\n
     }\r\n
     public static bool Mute {\r\n
-    get { bool mute; Marshal.ThrowExceptionForHR(Vol().GetMute(out mute)); return mute; }\r\n
-    set { Marshal.ThrowExceptionForHR(Vol().SetMute(value, System.Guid.Empty)); }\r\n
+    get { return WithVol(epv => { bool mute; Marshal.ThrowExceptionForHR(epv.GetMute(out mute)); return mute; }); }\r\n
+    set { WithVol(epv => { Marshal.ThrowExceptionForHR(epv.SetMute(value, System.Guid.Empty)); return 0; }); }\r\n
+    }\r\n
+    // applies volume levels written to stdin, one per line\r\n
+    public static void Listen() {\r\n
+    var reader = new System.Threading.Thread(() => {\r\n
+        string line;\r\n
+        while ((line = System.Console.In.ReadLine()) != null) {\r\n
+        float level;\r\n
+        if (float.TryParse(line, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out level)) {\r\n
+            try { Volume = level; } catch (System.Exception) { }\r\n
+        }\r\n
+        }\r\n
+    });\r\n
+    reader.IsBackground = true;\r\n
+    reader.Start();\r\n
     }\r\n
 };\r\n
 '@\r\n`,
+    init: "[Audio]::Listen()",
     command: "[Audio]::Volume | Out-Host; [Audio]::Mute | Out-Host;",
     onResponse: (data) => {
       if (data && data.length > 0) {

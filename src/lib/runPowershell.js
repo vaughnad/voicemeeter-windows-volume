@@ -105,10 +105,12 @@ const createPowershellHost = (label, onResponse) => {
 };
 
 /**
- * sends a one-off command to an existing powershell host by label
+ * writes a line to the stdin of an existing powershell host by label. a
+ * started worker never returns to the prompt, so the line is only consumed if
+ * the worker's own code reads stdin
  * @param {object} props an object of properties
  * @param {string} props.label the unique label of the powershell host
- * @param {string} command the command to send to the powershell host
+ * @param {string} command the line to send to the powershell host
  */
 const sendToPowershellWorker = ({ label, command }) => {
     if (powershellHosts[label]) {
@@ -118,11 +120,15 @@ const sendToPowershellWorker = ({ label, command }) => {
 
 /**
  * starts a powershell worker that lasts until manually closed. this worker
- * can use an initial setup script and will repeat a given command on a timer
+ * can use an initial setup script and will repeat a given command on a timer.
+ * the timer loop runs inside powershell as a single submission: every line
+ * the host receives is scanned by the installed AMSI provider, and some
+ * providers leak handles on each scan
  * @param {object} props an object of properties
  * @param {number} props.interval an interval in ms that the command should run
  * @param {string} props.label a unique label for this powershell worker
  * @param {string} props.setsup (optional) a filename without extension for the script needed during worker setup
+ * @param {string} props.init (optional) a command to run once before the timer starts
  * @param {string} props.command the commmand to run on a timer
  * @param {function} props.onResponse the function called with response data when a command completes (only commands piping to Out-Host will have response data)
  */
@@ -130,6 +136,7 @@ const startPowershellWorker = ({
     interval,
     label,
     setup,
+    init,
     command,
     onResponse,
 }) => {
@@ -147,24 +154,21 @@ const startPowershellWorker = ({
             if (!command.endsWith(';')) {
                 command = command + ';';
             }
-            command = controlCommandStart + command + controlCommandEnd + '\n';
+            command = `while ($true) { ${controlCommandStart}${command}${controlCommandEnd}Start-Sleep -Milliseconds ${interval}; }\n`;
+            if (init) {
+                command = formatCode(init) + '; ' + command;
+            }
         }
 
         // handle our setup command if supplied
         if (setup) {
             let setupCode = `${setup}\r\n`;
             ps.stdin.write(setupCode);
-
-            // set up our interval
-            powershellWorkers[label] = setInterval(() => {
-                ps.stdin.write(command);
-            }, interval);
-        } else {
-            // set up our interval
-            powershellWorkers[label] = setInterval(() => {
-                ps.stdin.write(command);
-            }, interval);
         }
+
+        // start the timer loop
+        ps.stdin.write(command);
+        powershellWorkers[label] = true;
     }
 };
 
@@ -174,7 +178,6 @@ const startPowershellWorker = ({
  */
 const stopPowershellWorker = (label) => {
     if (powershellWorkers[label]) {
-        clearInterval(powershellWorkers[label]);
         powershellWorkers[label] = null;
     }
     if (
