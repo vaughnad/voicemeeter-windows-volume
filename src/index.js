@@ -4,6 +4,11 @@
 
 // imports *********************************************************************
 
+// built-in
+import fs from 'fs';
+import path from 'path';
+import { execFile } from 'child_process';
+
 // local
 import { systray, setupPersistantSystray } from './lib/persistantSysTray';
 import { startAudioSync } from './lib/managers/audioSyncManager';
@@ -13,6 +18,40 @@ import { defaults } from './defaultSettings';
 import { getSystemColor } from './lib/util';
 
 const settingsPath = `${__dirname}/settings.json`;
+const logPath = `${__dirname}/vmwv.log`;
+
+// mirror console output into a log file for the current run; the app has no
+// visible console when started by the launcher
+try {
+    fs.writeFileSync(logPath, '');
+    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    const teeToLog = (original) => (...args) => {
+        original(...args);
+        logStream.write(
+            `${new Date().toISOString()} ${args
+                .map((arg) => (arg instanceof Error ? arg.stack : String(arg)))
+                .join(' ')}\n`
+        );
+    };
+    console.log = teeToLog(console.log.bind(console));
+    console.error = teeToLog(console.error.bind(console));
+} catch (error) {
+    console.log('Log file unavailable:', error.message);
+}
+
+// a second copy started by the launcher replaces the running one
+const exeName = path.basename(process.execPath);
+if (!/^node(\.exe)?$/i.test(exeName)) {
+    execFile(
+        'taskkill',
+        ['/F', '/T', '/FI', `PID ne ${process.pid}`, '/IM', exeName],
+        (error, stdout) => {
+            if (!error) {
+                console.log('Replaced running instance:', stdout.trim());
+            }
+        }
+    );
+}
 
 // handle app exit *************************************************************
 
@@ -21,7 +60,7 @@ const exitHandler = (options, exitCode) => {
         let vm = getVoicemeeterConnection();
         vm && vm.disconnect();
         vm = null;
-        systray.kill(false);
+        systray && systray.kill(false);
         console.log('clean exit');
     }
     if (exitCode) console.log('Exit Code:', exitCode);

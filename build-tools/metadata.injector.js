@@ -109,8 +109,6 @@ injector("./build-tools/include/app-launcher.vbs", (section_name) => {
   switch (section_name) {
     case "PKG":
       return [
-        `Set running = GetObject("winmgmts:\\\\.\\root\\cimv2").ExecQuery("Select ProcessId from Win32_Process Where Name = '${pkg.binaryName}'")`,
-        `If running.Count > 0 Then WScript.Quit 0`,
         `Shell.ShellExecute scriptDir & "\\required\\${pkg.binaryName}", , , "runas", 0`,
       ];
   }

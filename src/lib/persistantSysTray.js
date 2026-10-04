@@ -12,6 +12,42 @@ import {
 
 let systray = null;
 
+// at logon the shell's notification area can still be starting when the tray
+// binary registers its icon; the icon then stays blank and the binary never
+// reports ready, so a stalled attempt is killed and started over
+const READY_TIMEOUT_MS = 15000;
+
+/**
+ * starts the tray binary, retrying until it reports ready
+ * @param {object} trayApp the menu configuration that systray2 needs
+ * @param {number} attempt the current attempt number
+ * @returns {Promise<object>} the ready systray instance
+ */
+const startSystray = (trayApp, attempt = 1) => {
+    return new Promise((resolve, reject) => {
+        let tray = new SysTray(trayApp);
+        let timer = setTimeout(() => {
+            console.log(
+                `Tray icon not ready after ${READY_TIMEOUT_MS} ms (attempt ${attempt}), restarting it`
+            );
+            if (tray.process) {
+                tray.process.kill();
+            }
+            startSystray(trayApp, attempt + 1).then(resolve, reject);
+        }, READY_TIMEOUT_MS);
+        tray.ready().then(
+            () => {
+                clearTimeout(timer);
+                resolve(tray);
+            },
+            (error) => {
+                clearTimeout(timer);
+                reject(error);
+            }
+        );
+    });
+};
+
 /**
  * looks through the systray menu items and runs any existing init() method
  */
@@ -38,7 +74,6 @@ const runInitCode = () => {
  * @param {object} defaults the default settings to apply when generating them
  * @param {string} settingsPath the file location name name of the settings file
  * @param {function} onReady the callback function that is triggered when done
- * @returns {object} the newly created systray instance
  */
 const setupPersistantSystray = ({
     trayApp,
@@ -46,11 +81,10 @@ const setupPersistantSystray = ({
     settingsPath,
     onReady,
 }) => {
-    // create the systray instance
-    systray = new SysTray(trayApp);
-
-    // load the settings once ready
-    systray.ready().then(() => {
+    // create the systray instance and load the settings once ready
+    startSystray(trayApp).then((tray) => {
+        systray = tray;
+        console.log('Tray icon ready');
         loadSettings({
             settingsPath,
             defaults,
@@ -61,10 +95,11 @@ const setupPersistantSystray = ({
                 }
             },
         });
+        registerClicks();
     });
 
     // change the settings when a checkbox changes
-    systray.onClick((action) => {
+    const registerClicks = () => systray.onClick((action) => {
         if (action.item.click != null) {
             action.item.click();
         }
@@ -98,8 +133,6 @@ const setupPersistantSystray = ({
             action.item.activate(isToggleChecked(action.item.sid));
         }
     });
-
-    return systray;
 };
 
 export { systray, setupPersistantSystray };
